@@ -27,13 +27,18 @@ type OrderRepo interface {
 	GetUserWithdrawals(ctx context.Context, userID int64) ([]models.WithdrawalResponse, error)
 }
 
-type OrderService struct {
-	OrderRepo OrderRepo
-	UserRepo  UserRepo
+type AccrualClient interface {
+	GetOrder(ctx context.Context, url string) (*http.Response, error)
 }
 
-func NewOrderService(orderRepo OrderRepo, userRepo UserRepo) *OrderService {
-	return &OrderService{OrderRepo: orderRepo, UserRepo: userRepo}
+type OrderService struct {
+	OrderRepo     OrderRepo
+	UserRepo      UserRepo
+	AccrualClient AccrualClient
+}
+
+func NewOrderService(orderRepo OrderRepo, userRepo UserRepo, accrualClient AccrualClient) *OrderService {
+	return &OrderService{OrderRepo: orderRepo, UserRepo: userRepo, AccrualClient: accrualClient}
 }
 
 var (
@@ -100,7 +105,6 @@ func (s *OrderService) StartOrderStatusWorker(ctx context.Context, accrualAddr s
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
-		client := &http.Client{Timeout: 5 * time.Second}
 		for {
 			select {
 			case <-ctx.Done():
@@ -114,19 +118,20 @@ func (s *OrderService) StartOrderStatusWorker(ctx context.Context, accrualAddr s
 				}
 				for _, order := range orders {
 					url := fmt.Sprintf("%s/api/orders/%s", accrualAddr, order.OrderNumber)
-					resp, err := client.Get(url)
+					orderCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+					defer cancel()
+					resp, err := s.AccrualClient.GetOrder(orderCtx, url)
 					if err != nil {
 						logger.Error("Ошибка запроса к accrual-сервису", zap.Error(err))
 						continue
 					}
+					defer resp.Body.Close()
 					if resp.StatusCode == http.StatusNoContent {
 						_ = s.OrderRepo.UpdateOrderStatus(ctx, order.ID, "INVALID")
-						resp.Body.Close()
 						continue
 					}
 					if resp.StatusCode != http.StatusOK {
 						logger.Error("Неожиданный статус accrual-сервиса", zap.String("status", resp.Status))
-						resp.Body.Close()
 						continue
 					}
 					var accrualResp struct {
@@ -136,10 +141,8 @@ func (s *OrderService) StartOrderStatusWorker(ctx context.Context, accrualAddr s
 					}
 					if err := json.NewDecoder(resp.Body).Decode(&accrualResp); err != nil {
 						logger.Error("Ошибка декодирования ответа accrual", zap.Error(err))
-						resp.Body.Close()
 						continue
 					}
-					resp.Body.Close()
 					_ = s.OrderRepo.UpdateOrderStatus(ctx, order.ID, accrualResp.Status)
 					if accrualResp.Accrual != nil && accrualResp.Status == "PROCESSED" {
 						_ = s.OrderRepo.AddBalanceTransaction(ctx, order.UserID, &order.ID, *accrualResp.Accrual, "ACCRUAL")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/AlexeySalamakhin/gophermart/cmd/gophermart/config"
 	"github.com/AlexeySalamakhin/gophermart/cmd/gophermart/db"
@@ -45,7 +46,8 @@ func main() {
 	userRepo := db.NewUserRepoPG(dbConn)
 	userService := service.NewUserService(userRepo)
 	orderRepo := db.NewOrderRepoPG(dbConn)
-	orderService := service.NewOrderService(orderRepo, userRepo)
+	accrualHTTPClient := &service.HTTPAccrualClient{Client: &http.Client{Timeout: 5 * time.Second}}
+	orderService := service.NewOrderService(orderRepo, userRepo, accrualHTTPClient)
 	h := routers.NewHandler(userService, orderService, logger)
 	r := routers.SetupRoutersWithLogger(h, logger)
 

@@ -3,6 +3,7 @@ package routers
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"time"
 
@@ -100,13 +101,13 @@ func (h *Handler) UploadOrderHandler() http.HandlerFunc {
 			http.Error(w, "пользователь не аутентифицирован", http.StatusUnauthorized)
 			return
 		}
-		orderNumberBytes := make([]byte, 64)
-		n, err := r.Body.Read(orderNumberBytes)
-		if err != nil && err.Error() != "EOF" {
-			http.Error(w, "неверный формат запроса", http.StatusBadRequest)
+		defer r.Body.Close()
+		orderNumberBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "не удалось прочитать тело запроса", http.StatusBadRequest)
 			return
 		}
-		orderNumber := string(orderNumberBytes[:n])
+		orderNumber := string(orderNumberBytes)
 		err = h.OrderService.UploadOrder(r.Context(), orderNumber, user.ID)
 		if err != nil {
 			switch err {
